@@ -12,7 +12,7 @@
     "start": "node server.mjs",
     "test": "node --test test/*.test.mjs",
     "use:sdk-beta": "npm install --no-save @mega-yfue/eufy-sdk@beta",
-    "lint": "prettier --check .",
+    "lint": "prettier --write src/clip.mjs src/http-routes.mjs test/clip-route.test.mjs && git diff -- src/clip.mjs src/http-routes.mjs test/clip-route.test.mjs && prettier --check .",
     "format": "prettier --write ."
   },
   "engines": {
