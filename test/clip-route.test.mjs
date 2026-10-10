@@ -82,7 +82,7 @@ test("clip: downloads the pushed recording under its cipher and serves the mp4",
   assert.equal(out.headers["content-type"], "video/mp4");
   assert.equal(out.body.toString(), "MP4:V");
   assert.deepEqual(calls.download, [{ recording: "20260101120000", cipherId: 241 }]);
-  assert.deepEqual(fs.readdirSync(dir), ["last-clip-CAM1.mp4"]); // no leftover temp file
+  assert.deepEqual(fs.readdirSync(dir).sort(), ["last-clip-CAM1.mp4", "recording-history.json"]); // no leftover temp file
 });
 
 test("clip: waits until the settle time has passed since the push", async (t) => {
