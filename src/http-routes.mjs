@@ -262,10 +262,8 @@ export function createHttpHandler(ctx) {
     // Only recordings indexed from observed pushes can be retrieved by ID.
     if (kind === "recordings" && sn) {
       const parts = url.pathname.split("/").slice(1);
-      if (parts.length !== 2 && parts.length !== 3)
-        return json(res, 404, { error: "not found" });
-      if (req.method && req.method !== "GET")
-        return json(res, 405, { error: "method not allowed" });
+      if (parts.length !== 2 && parts.length !== 3) return json(res, 404, { error: "not found" });
+      if (req.method && req.method !== "GET") return json(res, 405, { error: "method not allowed" });
       const recordingId = parts[2];
       if (parts.length === 2) {
         const items = ctx.listRecordings?.(sn);
