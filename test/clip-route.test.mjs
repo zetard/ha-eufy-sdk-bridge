@@ -15,8 +15,8 @@ import { createClips } from "../src/clip.mjs";
 const PUSH = { deviceSn: "CAM1", cipher: 241, payload: { p: "20260101120000" } };
 
 /** A handler over one camera; `download` stands in for the SDK's `downloadRecording`. */
-function setup({ download = async () => ({ video: Buffer.from("V"), frames: 10 }), settleMs = "0" } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clip-"));
+function setup({ download = async () => ({ video: Buffer.from("V"), frames: 10 }), settleMs = "0", existingDir } = {}) {
+  const dir = existingDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "clip-"));
   const calls = { download: [], mux: 0 };
   const cam = {};
   if (download)
@@ -126,4 +126,61 @@ test("clip: a failed download answers 502 with the SDK's reason, and the next re
   fail = false;
   assert.equal((await get(handler)).code, 200);
   assert.equal(calls.download.length, 2);
+});
+
+test("indexed recordings: distinct pushes return matching clips and do not expose cipher references", async () => {
+  const { handler, ctx, calls } = setup({
+    download: async (opts) => ({ video: Buffer.from(opts.recording) }),
+  });
+  ctx.noteRecording(PUSH);
+  ctx.noteRecording({ ...PUSH, cipher: 242, payload: { p: "20260101120100" } });
+  ctx.noteRecording(PUSH); // duplicate push must not reorder the history
+  const list = await get(handler, "/recordings/CAM1");
+  assert.equal(list.code, 200);
+  const parsed = JSON.parse(list.body);
+  assert.deepEqual(parsed.recordings.map((entry) => entry.id), ["20260101120100", "20260101120000"]);
+  assert.equal(JSON.stringify(parsed).includes("cipher"), false);
+  const first = await get(handler, "/recordings/CAM1/20260101120000");
+  const second = await get(handler, "/recordings/CAM1/20260101120100");
+  assert.equal(first.body.toString(), "MP4:20260101120000");
+  assert.equal(second.body.toString(), "MP4:20260101120100");
+  assert.deepEqual(calls.download.map((c) => c.cipherId), [241, 242]);
+  assert.equal((await get(handler)).body.toString(), "MP4:20260101120100");
+});
+
+test("indexed recordings: persist event references across bridge restart", async () => {
+  const a = setup();
+  a.ctx.noteRecording(PUSH);
+  const file = path.join(a.dir, "recording-history.json");
+  assert.equal(fs.existsSync(file), true);
+  const b = setup({ existingDir: a.dir });
+  const list = await get(b.handler, "/recordings/CAM1");
+  assert.deepEqual(JSON.parse(list.body).recordings.map((entry) => entry.id), [PUSH.payload.p]);
+  assert.equal((await get(b.handler, "/recordings/CAM1/" + PUSH.payload.p)).code, 200);
+  assert.deepEqual(b.calls.download, [{ recording: PUSH.payload.p, cipherId: PUSH.cipher }]);
+});
+
+test("indexed recordings: reject unobserved identifiers and path traversal", async () => {
+  const { handler, ctx, calls } = setup();
+  ctx.noteRecording(PUSH);
+  for (const url of [
+    "/recordings/CAM1/nonexistent",
+    "/recordings/CAM2/" + PUSH.payload.p,
+    "/recordings/CAM1/..%2F..%2Fsecret",
+    "/recordings/CAM1/" + PUSH.payload.p + "/other",
+  ]) {
+    const result = await get(handler, url);
+    assert.notEqual(result.code, 200, url);
+  }
+  assert.equal(calls.download.length, 0);
+});
+
+test("indexed recordings: bounded to latest 50 unique push references", async () => {
+  const { handler, ctx } = setup();
+  for (let i = 0; i < 55; i++) {
+    ctx.noteRecording({ ...PUSH, payload: { p: String(20260101000000 + i) } });
+  }
+  const list = JSON.parse((await get(handler, "/recordings/CAM1")).body).recordings;
+  assert.equal(list.length, 50);
+  assert.equal((await get(handler, "/recordings/CAM1/20260101000000")).code, 404);
 });
