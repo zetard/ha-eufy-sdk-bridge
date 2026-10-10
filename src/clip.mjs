@@ -91,7 +91,13 @@ export function createClips(ctx) {
     if (events.some((entry) => entry.recording === recording)) return; // repeated notification
     const entry = { recording, cipherId: ev.cipher, at: Date.now() };
     events.unshift(entry);
-    events.length = Math.min(events.length, MAX_PER_CAMERA);
+    const removed = events.splice(MAX_PER_CAMERA);
+    for (const old of removed) {
+      // Remove bounded video caches too; metadata and MP4 must have matching retention.
+      const oldFile = path.join(eventImageDir, `indexed-clip-${ev.deviceSn}-${old.recording}.mp4`);
+      made.delete(oldFile);
+      fs.promises.rm(oldFile, { force: true }).catch(() => {});
+    }
     history.set(ev.deviceSn, events);
     latest.set(ev.deviceSn, entry);
     persist();
