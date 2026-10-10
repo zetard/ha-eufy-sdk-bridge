@@ -1,7 +1,7 @@
 // /clip/<sn>: the recording a HomeBase 2 stored for a camera's latest detection, as an mp4. The push names
 // the recording (`payload.p`) and its key (`cipher`); the SDK's `downloadRecording` fetches it over the
 // station's P2P session without waking the camera, and the bundled ffmpeg muxes the elementary streams
-// it returns (no re-encode). One file per camera holds the latest clip, so nothing needs pruning.
+// it returns (no re-encode). Indexed clips add bounded per-event storage alongside the latest cache.
 import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -50,9 +50,9 @@ export function createClips(ctx) {
     if (saved?.version === 1 && Array.isArray(saved.cameras)) {
       for (const camera of saved.cameras) {
         if (!validId(camera.sn) || !Array.isArray(camera.events)) continue;
-        const events = camera.events.filter((e) =>
-          validId(e.recording) && Number.isFinite(e.at) && e.cipherId !== undefined
-        ).slice(0, MAX_PER_CAMERA);
+        const events = camera.events
+          .filter((e) => validId(e.recording) && Number.isFinite(e.at) && Math.abs(e.at) < 8.64e15 && e.cipherId !== undefined)
+          .slice(0, MAX_PER_CAMERA);
         if (events.length) {
           history.set(camera.sn, events);
           latest.set(camera.sn, events[0]);
@@ -66,19 +66,30 @@ export function createClips(ctx) {
     fs.mkdirSync(eventImageDir, { recursive: true });
     const tmp = historyFile + ".tmp";
     try {
-      fs.writeFileSync(tmp, JSON.stringify({
-        version: 1,
-        cameras: [...history].map(([sn, events]) => ({ sn, events })),
-      }), { mode: 0o600 });
+      fs.writeFileSync(
+        tmp,
+        JSON.stringify({
+          version: 1,
+          cameras: [...history].map(([sn, events]) => ({ sn, events })),
+        }),
+        { mode: 0o600 },
+      );
       fs.renameSync(tmp, historyFile);
     } catch (error) {
       log(`recording history save failed: ${error.message}`);
-      try { fs.rmSync(tmp, { force: true }); } catch {}
+      try {
+        fs.rmSync(tmp, { force: true });
+      } catch {
+        // Best effort cleanup if the data volume is unavailable.
+      }
     }
   }
   function listRecordings(sn) {
     if (!validId(sn)) return null;
-    return (history.get(sn) ?? []).map(({ recording, at }) => ({ id: recording, detectedAt: new Date(at).toISOString() }));
+    return (history.get(sn) ?? []).map(({ recording, at }) => ({
+      id: recording,
+      observedAt: new Date(at).toISOString(),
+    }));
   }
   const made = new Map(); // file -> recording stored there
   const builds = new Map(); // file -> { recording, done } for the build in progress
@@ -132,13 +143,15 @@ export function createClips(ctx) {
       return { status: 404, error: "no stored recordings on this device" };
     if (!validId(sn) || (recordingId !== undefined && !validId(recordingId)))
       return { status: 400, error: "invalid recording request" };
-    const last = recordingId === undefined
-      ? latest.get(sn)
-      : history.get(sn)?.find((entry) => entry.recording === recordingId);
+    const last =
+      recordingId === undefined
+        ? latest.get(sn)
+        : history.get(sn)?.find((entry) => entry.recording === recordingId);
     if (!last) return { status: recordingId === undefined ? 409 : 404, error: "recording not indexed" };
-    const file = recordingId === undefined
-      ? path.join(eventImageDir, `last-clip-${sn}.mp4`)
-      : path.join(eventImageDir, `indexed-clip-${sn}-${recordingId}.mp4`);
+    const file =
+      recordingId === undefined
+        ? path.join(eventImageDir, `last-clip-${sn}.mp4`)
+        : path.join(eventImageDir, `indexed-clip-${sn}-${recordingId}.mp4`);
     if (made.get(file) === last.recording) {
       try {
         return { mp4: await fs.promises.readFile(file) };
