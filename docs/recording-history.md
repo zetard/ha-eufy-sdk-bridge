@@ -9,8 +9,8 @@ creation) so they survive restarts.
 
 New endpoints:
 
-- `GET /recordings/<camera-serial>` lists newest-first `{id, detectedAt}` values
-  associated with this camera, without exposing cipher references.
+- `GET /recordings/<camera-serial>` lists newest-first `{id, observedAt}` values
+  associated with this camera, without exposing cipher references. `observedAt` is when the bridge received the push, not the camera's precise capture time.
 - `GET /recordings/<camera-serial>/<recording-id>` downloads the matching MP4
   from HomeBase and caches it locally for further requests.
 
