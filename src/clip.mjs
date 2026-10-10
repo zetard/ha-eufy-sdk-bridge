@@ -38,16 +38,63 @@ export function createClips(ctx) {
   const { cfg, eufy, eventImageDir } = ctx;
   const mux = ctx.muxClip ?? muxMp4;
   const log = (...a) => ctx.eventLog?.(...a);
-  const latest = new Map(); // sn -> { recording, cipherId, at } from the camera's latest push
-  const made = new Map(); // sn -> the recording last-clip-<sn>.mp4 holds
-  const builds = new Map(); // sn -> { recording, done } for the build in progress
+  const latest = new Map(); // sn -> latest indexed event
+  const historyFile = path.join(eventImageDir, "recording-history.json");
+  const history = new Map(); // sn -> newest-first entries containing sensitive cipherId
+  const MAX_PER_CAMERA = 50;
+  const validId = (value) => typeof value === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(value);
+  // The mounted data directory survives bridge restarts. Keep encryption references private:
+  // never expose cipherId in HTTP responses, logs, or a source-controlled file.
+  try {
+    const saved = JSON.parse(fs.readFileSync(historyFile, "utf8"));
+    if (saved?.version === 1 && Array.isArray(saved.cameras)) {
+      for (const camera of saved.cameras) {
+        if (!validId(camera.sn) || !Array.isArray(camera.events)) continue;
+        const events = camera.events.filter((e) =>
+          validId(e.recording) && Number.isFinite(e.at) && e.cipherId !== undefined
+        ).slice(0, MAX_PER_CAMERA);
+        if (events.length) {
+          history.set(camera.sn, events);
+          latest.set(camera.sn, events[0]);
+        }
+      }
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") log(`recording history load failed: ${error.message}`);
+  }
+  function persist() {
+    fs.mkdirSync(eventImageDir, { recursive: true });
+    const tmp = historyFile + ".tmp";
+    try {
+      fs.writeFileSync(tmp, JSON.stringify({
+        version: 1,
+        cameras: [...history].map(([sn, events]) => ({ sn, events })),
+      }), { mode: 0o600 });
+      fs.renameSync(tmp, historyFile);
+    } catch (error) {
+      log(`recording history save failed: ${error.message}`);
+      try { fs.rmSync(tmp, { force: true }); } catch {}
+    }
+  }
+  function listRecordings(sn) {
+    if (!validId(sn)) return null;
+    return (history.get(sn) ?? []).map(({ recording, at }) => ({ id: recording, detectedAt: new Date(at).toISOString() }));
+  }
+  const made = new Map(); // file -> recording stored there
+  const builds = new Map(); // file -> { recording, done } for the build in progress
 
   /** `push` listener: remember the recording a detection named. */
   function noteRecording(ev) {
     const recording = ev?.payload?.p;
-    if (!ev?.deviceSn || typeof recording !== "string" || ev.cipher === undefined) return;
-    if (latest.get(ev.deviceSn)?.recording === recording) return; // a repeat of the same push
-    latest.set(ev.deviceSn, { recording, cipherId: ev.cipher, at: Date.now() });
+    if (!validId(ev?.deviceSn) || !validId(recording) || ev.cipher === undefined) return;
+    const events = history.get(ev.deviceSn) ?? [];
+    if (events.some((entry) => entry.recording === recording)) return; // repeated notification
+    const entry = { recording, cipherId: ev.cipher, at: Date.now() };
+    events.unshift(entry);
+    events.length = Math.min(events.length, MAX_PER_CAMERA);
+    history.set(ev.deviceSn, events);
+    latest.set(ev.deviceSn, entry);
+    persist();
   }
 
   async function build(sn, cam, { recording, cipherId, at }, file) {
@@ -59,7 +106,7 @@ export function createClips(ctx) {
     const tmp = `${file}.tmp`;
     await mux(clip, tmp);
     await fs.promises.rename(tmp, file);
-    made.set(sn, recording);
+    made.set(file, recording);
     log(
       `/clip ${sn} → recording ${recording}: ${clip.frames} frames, ${clip.missingFrames} missing, ` +
         `${clip.durationMs} ms${clip.audio?.length ? ", with audio" : ""}`,
@@ -68,7 +115,7 @@ export function createClips(ctx) {
   }
 
   /** The latest detection's clip for `sn`: `{ mp4 }`, or `{ status, error, reason? }`. */
-  async function clipFor(sn) {
+  async function clipFor(sn, recordingId) {
     let cam;
     try {
       cam = (await eufy.getDevice(sn)).camera?.();
@@ -77,25 +124,31 @@ export function createClips(ctx) {
     }
     if (typeof cam?.downloadRecording !== "function")
       return { status: 404, error: "no stored recordings on this device" };
-    const last = latest.get(sn);
-    if (!last) return { status: 409, error: "no recording named by a push since the bridge started" };
-    const file = path.join(eventImageDir, `last-clip-${sn}.mp4`);
-    if (made.get(sn) === last.recording) {
+    if (!validId(sn) || (recordingId !== undefined && !validId(recordingId)))
+      return { status: 400, error: "invalid recording request" };
+    const last = recordingId === undefined
+      ? latest.get(sn)
+      : history.get(sn)?.find((entry) => entry.recording === recordingId);
+    if (!last) return { status: recordingId === undefined ? 409 : 404, error: "recording not indexed" };
+    const file = recordingId === undefined
+      ? path.join(eventImageDir, `last-clip-${sn}.mp4`)
+      : path.join(eventImageDir, `indexed-clip-${sn}-${recordingId}.mp4`);
+    if (made.get(file) === last.recording) {
       try {
         return { mp4: await fs.promises.readFile(file) };
       } catch {
-        made.delete(sn); // gone from disk: build it again
+        made.delete(file); // gone from disk: build it again
       }
     }
     // One build per camera at a time: callers asking for the same recording share it, and a newer
     // recording waits for the one in progress so the file ends up holding the newer clip.
-    let current = builds.get(sn);
+    let current = builds.get(file);
     if (current?.recording !== last.recording) {
       const previous = current?.done.catch(() => {}) ?? Promise.resolve();
       const entry = { recording: last.recording };
       entry.done = previous.then(() => build(sn, cam, last, file));
-      entry.done.finally(() => builds.get(sn) === entry && builds.delete(sn)).catch(() => {});
-      builds.set(sn, (current = entry));
+      entry.done.finally(() => builds.get(file) === entry && builds.delete(file)).catch(() => {});
+      builds.set(file, (current = entry));
     }
     try {
       return { mp4: await current.done };
@@ -107,5 +160,5 @@ export function createClips(ctx) {
     }
   }
 
-  return { noteRecording, clipFor };
+  return { noteRecording, clipFor, listRecordings };
 }
