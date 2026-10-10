@@ -14,12 +14,16 @@ WS    :3000/ws             control, state, events     ← the frontend talks to 
 HTTP  :3000/stream/<sn>    live video (Annex-B)       ← go2rtc pulls this
 HTTP  :3000/snapshot/<sn>  a JPEG still
 HTTP  :3000/clip/<sn>      the latest detection's recording, as an mp4 (HomeBase 2)
+HTTP  :3000/recordings/<sn>          observed recording index (experimental)
+HTTP  :3000/recordings/<sn>/<id>     event-specific MP4 (experimental)
 HTTP  :3000/healthz        which cameras are streaming
 ```
 
 Video is deliberately **not** on the WebSocket: the WS hands back a URL, and _connecting to that URL
 is what starts the camera — disconnecting is what stops it_. There is no "stream is running" flag to
 drift out of sync.
+
+**Recording history (development fork):** [docs/recording-history.md](./docs/recording-history.md) describes the bounded observed-push index, known limitations, and HTTP exposure considerations.
 
 ## Run it
 
