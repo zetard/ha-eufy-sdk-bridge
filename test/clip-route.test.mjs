@@ -138,13 +138,19 @@ test("indexed recordings: distinct pushes return matching clips and do not expos
   const list = await get(handler, "/recordings/CAM1");
   assert.equal(list.code, 200);
   const parsed = JSON.parse(list.body);
-  assert.deepEqual(parsed.recordings.map((entry) => entry.id), ["20260101120100", "20260101120000"]);
+  assert.deepEqual(
+    parsed.recordings.map((entry) => entry.id),
+    ["20260101120100", "20260101120000"],
+  );
   assert.equal(JSON.stringify(parsed).includes("cipher"), false);
   const first = await get(handler, "/recordings/CAM1/20260101120000");
   const second = await get(handler, "/recordings/CAM1/20260101120100");
   assert.equal(first.body.toString(), "MP4:20260101120000");
   assert.equal(second.body.toString(), "MP4:20260101120100");
-  assert.deepEqual(calls.download.map((c) => c.cipherId), [241, 242]);
+  assert.deepEqual(
+    calls.download.map((c) => c.cipherId),
+    [241, 242],
+  );
   assert.equal((await get(handler)).body.toString(), "MP4:20260101120100");
 });
 
@@ -155,7 +161,10 @@ test("indexed recordings: persist event references across bridge restart", async
   assert.equal(fs.existsSync(file), true);
   const b = setup({ existingDir: a.dir });
   const list = await get(b.handler, "/recordings/CAM1");
-  assert.deepEqual(JSON.parse(list.body).recordings.map((entry) => entry.id), [PUSH.payload.p]);
+  assert.deepEqual(
+    JSON.parse(list.body).recordings.map((entry) => entry.id),
+    [PUSH.payload.p],
+  );
   assert.equal((await get(b.handler, "/recordings/CAM1/" + PUSH.payload.p)).code, 200);
   assert.deepEqual(b.calls.download, [{ recording: PUSH.payload.p, cipherId: PUSH.cipher }]);
 });
