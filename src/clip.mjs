@@ -51,7 +51,10 @@ export function createClips(ctx) {
       for (const camera of saved.cameras) {
         if (!validId(camera.sn) || !Array.isArray(camera.events)) continue;
         const events = camera.events
-          .filter((e) => validId(e.recording) && Number.isFinite(e.at) && Math.abs(e.at) < 8.64e15 && e.cipherId !== undefined)
+          .filter(
+            (e) =>
+              validId(e.recording) && Number.isFinite(e.at) && Math.abs(e.at) < 8.64e15 && e.cipherId !== undefined,
+          )
           .slice(0, MAX_PER_CAMERA);
         if (events.length) {
           history.set(camera.sn, events);
@@ -144,9 +147,7 @@ export function createClips(ctx) {
     if (!validId(sn) || (recordingId !== undefined && !validId(recordingId)))
       return { status: 400, error: "invalid recording request" };
     const last =
-      recordingId === undefined
-        ? latest.get(sn)
-        : history.get(sn)?.find((entry) => entry.recording === recordingId);
+      recordingId === undefined ? latest.get(sn) : history.get(sn)?.find((entry) => entry.recording === recordingId);
     if (!last) return { status: recordingId === undefined ? 409 : 404, error: "recording not indexed" };
     const file =
       recordingId === undefined
