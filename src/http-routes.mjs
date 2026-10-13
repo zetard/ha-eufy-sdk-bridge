@@ -259,6 +259,24 @@ export function createHttpHandler(ctx) {
       }
     }
 
+    // Only recordings indexed from observed pushes can be retrieved by ID.
+    if (kind === "recordings" && sn) {
+      const parts = url.pathname.split("/").slice(1);
+      if (parts.length !== 2 && parts.length !== 3) return json(res, 404, { error: "not found" });
+      if (req.method && req.method !== "GET") return json(res, 405, { error: "method not allowed" });
+      const recordingId = parts[2];
+      if (parts.length === 2) {
+        const items = ctx.listRecordings?.(sn);
+        return items == null
+          ? json(res, 400, { error: "invalid camera identifier" })
+          : json(res, 200, { camera: sn, recordings: items });
+      }
+      const clip = (await ctx.clipFor?.(sn, recordingId)) ?? { status: 404, error: "clips unavailable" };
+      if (!clip.mp4) return json(res, clip.status, { error: clip.error, reason: clip.reason });
+      res.writeHead(200, { "content-type": "video/mp4", "content-length": clip.mp4.length });
+      return res.end(clip.mp4);
+    }
+
     // The recording a HomeBase 2 stored for this camera's latest detection, as an mp4 (see clip.mjs).
     if (kind === "clip" && sn) {
       const clip = (await ctx.clipFor?.(sn)) ?? { status: 404, error: "clips unavailable" };
