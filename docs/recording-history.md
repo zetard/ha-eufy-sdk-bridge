@@ -22,8 +22,12 @@ would be necessary for that.
 
 ## Operational cautions
 
-- This is an **experimental development-branch feature**, not active in the installed
-  Home Assistant add-on until a build based on this fork is deployed.
+- This feature is included in **this fork's `main` branch**, not in the official
+  upstream bridge image. It is running through the separate experimental
+  [`zetard/ha-eufy-sdk-addon`](https://github.com/zetard/ha-eufy-sdk-addon)
+  recordings add-on, which pins the two customized bridge modules to the previously
+  tested commit `f72e40c`. Changing this repository's `main` branch alone **does not**
+  change the installed add-on.
 - As with the existing live stream and `/clip` API, these HTTP routes have **no
   separate authentication**. Do not expose the bridge port to the internet. In
   particular, historical clips are more sensitive than a single live snapshot.
@@ -40,6 +44,19 @@ would be necessary for that.
   `/clip/<camera-serial>` still returns the latest recording.
 - Do not run a second Eufy bridge against the same account without understanding
   the SDK session/device-identity interaction; another bridge may steal push events.
+
+## Keeping up with the original bridge
+
+- Track the official **released** upstream `main` branch, not unreleased `dev` work.
+- Merge upstream releases into this fork's `main`, retaining the recording-index
+  changes in `src/clip.mjs` and `src/http-routes.mjs` and their regression tests.
+- The add-on currently builds from official bridge image `0.4.0` and overlays
+  those **two files** from a pinned tested commit; a newer bridge Docker image
+  must be checked for compatibility with both overlays before updating that pin.
+- Test indexed-event MP4 retrieval, push/event images, ordinary `/clip`, cameras,
+  and Home Now download before deploying a changed add-on to Home Assistant.
+- Keep the add-on pin unchanged for routine GitHub maintenance. Updating this fork
+  does not automatically update Home Assistant.
 
 ## Tests
 
