@@ -23,7 +23,7 @@ Video is deliberately **not** on the WebSocket: the WS hands back a URL, and _co
 is what starts the camera — disconnecting is what stops it_. There is no "stream is running" flag to
 drift out of sync.
 
-**Recording history (development fork):** [docs/recording-history.md](./docs/recording-history.md) describes the bounded observed-push index, known limitations, and HTTP exposure considerations.
+**Recording history (this fork):** [docs/recording-history.md](./docs/recording-history.md) describes our tested, push-observed recording index, its limitations, and HTTP exposure considerations. This code is included in this fork's `main`; the separate [recordings add-on](https://github.com/zetard/ha-eufy-sdk-addon) pins the already-tested modules. The upstream Docker image shown below **does not include our custom recording-history endpoints**.
 
 ## Run it
 
