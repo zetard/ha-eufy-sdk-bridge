@@ -5,6 +5,7 @@
 import { WebSocketServer } from "ws";
 import { listLightEffects } from "@mega-yfue/eufy-sdk";
 import { SOLIX_CONTROLS, SOLIX_DISABLED } from "./solix.mjs";
+import { redactSecrets } from "./redact.mjs";
 
 // Commands that require an authenticated eufy session — gated in one place before dispatch. (auth.* and
 // solix.* run before this gate, so a client can drive 2FA/captcha and Solix while eufy is still pending.)
@@ -28,10 +29,10 @@ export function createWsServer(ctx, httpServer) {
   const { flags, clients } = ctx.state;
 
   const send = (ws, obj) => {
-    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
+    if (ws.readyState === ws.OPEN) ws.send(redactSecrets(JSON.stringify(obj)));
   };
   const broadcast = (obj) => {
-    const s = JSON.stringify(obj);
+    const s = redactSecrets(JSON.stringify(obj));
     for (const ws of clients) if (ws.readyState === ws.OPEN) ws.send(s);
   };
 
@@ -44,7 +45,7 @@ export function createWsServer(ctx, httpServer) {
     clients.add(ws);
     // On connect, tell the client the schema AND the current auth state, so a frontend knows immediately
     // whether it must drive a 2FA/captcha step before anything else works.
-    send(ws, { event: "hello", schemaVersion: SCHEMA_VERSION, auth: ctx.authStatus() });
+    send(ws, { event: "hello", schemaVersion: SCHEMA_VERSION, bridgeId: ctx.bridgeId, auth: ctx.authStatus() });
     ws.on("close", () => clients.delete(ws));
     ws.on("message", (raw) => handleMessage(ws, raw).catch((e) => console.error("[bridge] ws:", e)));
   });
@@ -91,7 +92,7 @@ export function createWsServer(ctx, httpServer) {
       switch (cmd) {
         // ── auth ──
         case "auth.status":
-          return reply({ auth: ctx.authStatus() });
+          return reply({ auth: ctx.authStatus(), bridgeId: ctx.bridgeId });
         case "auth.submit": {
           // A 2FA code (`code`) or a captcha answer (`captcha`). The pending id/token is held in the SDK.
           if (msg.captcha != null) await ctx.applyLogin(await eufy.solveCaptcha(String(msg.captcha)));

@@ -1,4 +1,6 @@
-// Battery-saving stream lifecycle. Keep a camera's P2P live feed only while it's worth streaming: if no
+import { onBatteryPower } from "./power.mjs";
+
+// Battery-saving stream lifecycle. Keep a BATTERY camera's P2P live feed only while it's worth streaming: if no
 // detection arrives for cfg.streamIdleMs, tear the feed down AND suspend reopening (go2rtc's ffmpeg
 // source then retries into a 503). The suspension lifts on the next detection OR once the consumer stops
 // pulling — so a stuck 24/7 consumer keeps the radio off while a viewer that returns is served at once.
@@ -39,13 +41,15 @@ export function createStreamIdle(ctx) {
   }
 
   /** Record a failed /stream open and arm exponential backoff (base doubles per streak, capped). */
-  function noteStreamFailure(sn) {
+  function noteStreamFailure(sn, reason) {
     if (!sn || !cfg.streamFailBackoffMs) return;
     const streak = (streamBackoff.get(sn)?.streak ?? 0) + 1;
     const window = Math.min(cfg.streamFailBackoffMs * 2 ** (streak - 1), STREAM_FAIL_BACKOFF_MAX_MS);
-    streamBackoff.set(sn, { until: Date.now() + window, streak });
+    // The open can fail for any reason (no P2P route, an RTC sign refused, a session that never served
+    // video), so the log and the backoff 503 carry the error itself rather than guessing at a cause.
+    streamBackoff.set(sn, { until: Date.now() + window, streak, reason });
     console.log(
-      `[bridge] stream(${sn}) open failed (#${streak}) — backing off reopen ${Math.round(window / 1000)}s (P2P unreachable)`,
+      `[bridge] stream(${sn}) open failed (#${streak}): ${reason ?? "unknown error"} — backing off reopen ${Math.round(window / 1000)}s`,
     );
   }
 
@@ -69,7 +73,7 @@ export function createStreamIdle(ctx) {
     }
     for (const d of devices) {
       const sn = d.sn;
-      if (!(d.capabilities ?? []).includes("battery")) continue; // battery cameras only
+      if (!onBatteryPower(d.model, d.capabilities)) continue; // battery cameras only
       if (d.state?.rtspStream !== true) continue; // only if currently publishing
       if (activeStreams.has(sn)) {
         rtspLastActive.set(sn, now);
@@ -97,8 +101,11 @@ export function createStreamIdle(ctx) {
   function streamIdleTick() {
     if (!cfg.streamIdleMs) return;
     const now = Date.now();
-    // Auto-off any actively-pulled feed that has seen no detection for the whole idle window.
+    // Auto-off any actively-pulled BATTERY feed that has seen no detection for the whole idle window. A
+    // mains camera is left streaming: keeping it up costs no battery, and a continuous consumer (an NVR)
+    // would otherwise be cut off and held off by the suspension until the next motion.
     for (const [sn, st] of activeStreams) {
+      if (st.battery === false) continue;
       const lastSeen = Math.max(st.startedAt, lastDetect.get(sn) ?? 0);
       if (now - lastSeen >= cfg.streamIdleMs) {
         console.log(`[bridge] stream(${sn}) idle ${Math.round((now - lastSeen) / 1000)}s (no detection) — auto-off`);

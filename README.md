@@ -39,7 +39,8 @@ docker run -d --name eufy-bridge --network host \
 or with Compose (`cp .env.example .env` first): `docker compose up -d`.
 
 **Full deploy guide (alongside Home Assistant, config reference, first-run 2FA/captcha):**
-[docs/docker-compose.md](./docs/docker-compose.md) · **WS protocol:** [docs/ws-protocol.md](./docs/ws-protocol.md)
+[docs/docker-compose.md](./docs/docker-compose.md) · **WS protocol:** [docs/ws-protocol.md](./docs/ws-protocol.md) ·
+**Troubleshooting:** [docs/troubleshooting.md](./docs/troubleshooting.md)
 
 ## Where it fits
 

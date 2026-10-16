@@ -1,4 +1,5 @@
 import { unobservableMembers } from "@mega-yfue/eufy-sdk";
+import { onBatteryPower } from "./power.mjs";
 // The host-facing view of a device: identity + capabilities + live property values + a stream path for
 // cameras. This is the shape the WS `devices.list` / `device.state` / `device.properties` commands and
 // the go2rtc camera registration both read, so a camera is "a device describeDevice gave a `stream`",
@@ -32,6 +33,9 @@ export function createDeviceView(ctx) {
       ...decodedReadings(dev, m),
       stream: isCamera ? `/stream/${m.sn}` : undefined,
       streaming: isCamera ? streaming.has(m.sn) : undefined, // live P2P feed active right now?
+      // "battery" | "wired", decided the way the SDK decides it (power.mjs): the `battery` capability alone
+      // also marks mains-only models.
+      power: isCamera ? (onBatteryPower(m.model, m.capabilities) ? "battery" : "wired") : undefined,
       canReboot: m.codec === "station", // HomeBase-only; drives a Reboot button in HA
     };
   }
@@ -111,6 +115,9 @@ export function createDeviceView(ctx) {
       unit: p.unit, // "%", "°C", "dBm", …
       kind: p.kind, // percent | celsius | dbm | seconds | …
       writable: p.writable, // a setter exists (device.set accepts it)
+      // whether the device has reported it (eufy-sdk 0.5+); false lets a host keep a never-reported
+      // read-only value out of view. Undefined on an older SDK, which a host treats as "unknown".
+      reported: p.reported,
       enumValues: p.enumValues, // { raw: label } for enums
       description: p.description,
     }));
