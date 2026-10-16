@@ -101,3 +101,13 @@ test("STREAM_FAIL_BACKOFF_MS config: default, custom, and 0-to-disable", () => {
   assert.equal(loadConfig({ ...base, STREAM_FAIL_BACKOFF_MS: "5000" }).cfg.streamFailBackoffMs, 5_000);
   assert.equal(loadConfig({ ...base, STREAM_FAIL_BACKOFF_MS: "0" }).cfg.streamFailBackoffMs, 0);
 });
+
+test("a failed open records why it failed, instead of assuming P2P was unreachable", () => {
+  const { idle, state, restore } = build();
+  try {
+    idle.noteStreamFailure("SN1", "RTC sign for T9000 refused: HTTP 401");
+    assert.equal(state.streamBackoff.get("SN1").reason, "RTC sign for T9000 refused: HTTP 401");
+  } finally {
+    restore();
+  }
+});

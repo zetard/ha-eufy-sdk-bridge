@@ -1,6 +1,6 @@
 {
   "name": "ha-eufy-sdk-bridge",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "WebSocket + HTTP bridge exposing the eufy-sdk SDK to a frontend (Home Assistant, a web UI, anything), with go2rtc for live video.",
@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@mega-yfue/eufy-sdk": "0.4.0",
+    "node-datachannel": "^0.33.4",
     "ws": "^8.18.0"
   },
   "devDependencies": {

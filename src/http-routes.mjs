@@ -6,9 +6,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { streamClientFor, dropStreamClient, isSupersededStreamClient } from "../streams.mjs";
 import { createLiveStillTap } from "./live-still.mjs";
+import { onBatteryPower } from "./power.mjs";
+import { storedThumbnailSeenAt } from "./stored-thumbnail.mjs";
+import { redactSecrets } from "./redact.mjs";
 
 function json(res, code, body) {
-  const s = JSON.stringify(body);
+  const s = redactSecrets(JSON.stringify(body));
   res.writeHead(code, { "content-type": "application/json", "content-length": Buffer.byteLength(s) });
   res.end(s);
 }
@@ -40,6 +43,17 @@ export function createHttpHandler(ctx) {
   // such a lease is dropped once its last feed ends (see cleanup).
   const dropWhenIdle = new WeakSet();
 
+  /** The persisted image when it was written after `since` and differs from `jpeg`, else undefined. */
+  async function diskCopyNewerThan(file, since, jpeg) {
+    try {
+      if ((await fs.promises.stat(file)).mtimeMs <= since) return undefined;
+      const disk = await fs.promises.readFile(file);
+      return disk.equals(jpeg) ? undefined : disk;
+    } catch {
+      return undefined; // nothing persisted yet
+    }
+  }
+
   // Ask go2rtc who is CONSUMING a stream (its remote address / user-agent / protocol) and log each — so
   // a stream that keeps opening "by itself" can be traced to the real viewer (an HA card, a recording,
   // a WebRTC/HLS client) rather than the go2rtc ffmpeg the bridge sees. Best-effort: on any error (go2rtc
@@ -52,9 +66,9 @@ export function createHttpHandler(ctx) {
       const data = await r.json();
       const consumers = (data?.consumers ?? data?.[sn]?.consumers ?? []).filter(Boolean);
       if (!consumers.length) {
-        ctx.eventLog?.(
-          `/stream ${sn} — go2rtc reports NO consumers (a leftover ffmpeg retry / probe, not a live viewer)`,
-        );
+        // go2rtc opens the source before it registers the viewer that asked for it, so a cold start
+        // with a real viewer lands here too; only a request that never gains a consumer is a stray.
+        ctx.eventLog?.(`/stream ${sn} — go2rtc lists no consumer yet (normal on a cold start)`);
         return;
       }
       for (const c of consumers) {
@@ -90,6 +104,7 @@ export function createHttpHandler(ctx) {
       return json(res, 200, {
         ok: true,
         schemaVersion: SCHEMA_VERSION,
+        bridgeId: ctx.bridgeId, // stable per install: the same bridge under another address has the same id
         auth: ctx.authStatus(),
         sessionLost: flags.sessionLost, // cloud token kicked/expired since boot → re-auth in progress/needed
         streaming: [...streaming],
@@ -147,10 +162,10 @@ export function createHttpHandler(ctx) {
         const device = await eufy.getDevice(sn);
         const cam = device.camera?.();
         if (!cam) return json(res, 404, { error: "no camera on this device" });
-        // A battery-capable camera pays a radio wake for every still; one without that capability does not.
-        // Same test the idle watcher uses (see stream-idle.mjs), so "which cameras are expensive" is
-        // decided in one way.
-        const onBattery = (device.describe?.()?.capabilities ?? []).includes("battery");
+        // A battery camera pays a radio wake for every still; a mains one does not. Same test the idle
+        // watcher uses (see power.mjs), so "which cameras are expensive" is decided in one way.
+        const desc = device.describe?.();
+        const onBattery = onBatteryPower(desc?.model, desc?.capabilities);
         let wantLive = cfg.snapshotLive === "auto" ? !onBattery : cfg.snapshotLive;
         switch (snapshotMode) {
           case "live":
@@ -227,6 +242,19 @@ export function createHttpHandler(ctx) {
           return json(res, 404, { error: "no camera on this device" });
         }
         const jpeg = await cam.snapshotStored();
+        // The retained thumbnail is the newest PUSHED one, not necessarily the newest picture: on a
+        // local-storage account the cloud attaches a thumbnail to only some events, and the on-detection
+        // HomeBase refresh writes each later event's cover to disk. So when the disk copy was written after
+        // this thumbnail first appeared, it is the newer picture: serve it and leave it in place.
+        const seenAt = storedThumbnailSeenAt(ctx.state.storedThumbSeen, sn, jpeg);
+        const newer = await diskCopyNewerThan(file, seenAt, jpeg);
+        if (newer) {
+          ctx.eventLog(
+            `/event-image ${sn} → 200 local cover (${newer.length}B, from disk; newer than the retained push thumbnail) — Last event served`,
+          );
+          res.writeHead(200, { "content-type": "image/jpeg", "content-length": newer.length });
+          return res.end(newer);
+        }
         fs.writeFile(file, jpeg, () => {}); // best-effort persist for restart survival
         ctx.eventLog(`/event-image ${sn} → 200 live thumbnail (${jpeg.length}B) — Last event updated`);
         res.writeHead(200, { "content-type": "image/jpeg", "content-length": jpeg.length });
@@ -297,12 +325,12 @@ export function createHttpHandler(ctx) {
         return json(res, 503, {
           error: "stream idle-suspended — no recent detection, waiting for motion or a fresh viewer",
         });
-      // Failure-backoff: a recent open failed (P2P unreachable), and go2rtc retries every ~30s. Serve a
+      // Failure-backoff: a recent open failed, and go2rtc retries every ~30s. Serve a
       // fast 503 without opening a P2P session, so a camera that can't connect isn't woken on every retry.
       const backoff = ctx.streamBackoffMs?.(sn) ?? 0;
       if (backoff > 0)
         return json(res, 503, {
-          error: `stream backing off after a failed open — retry in ${Math.ceil(backoff / 1000)}s (P2P unreachable)`,
+          error: `stream backing off after a failed open (${ctx.state.streamBackoff?.get(sn)?.reason ?? "unknown error"}) — retry in ${Math.ceil(backoff / 1000)}s`,
         });
       // The viewer can leave while the session is still opening (login, P2P connect, warm-up). Watch for
       // that from the start: a feed opened for nobody would hold the camera's live source open and report
@@ -314,7 +342,8 @@ export function createHttpHandler(ctx) {
       try {
         lease = openStreamClient(sn, cfg); // its OWN P2P session — see streams.mjs
         const client = await lease;
-        const cam = (await client.getDevice(sn)).camera?.();
+        const dev = await client.getDevice(sn);
+        const cam = dev.camera?.();
         if (!cam?.openReadable) {
           res.off("close", onGone);
           return json(res, 404, { error: "no live video on this device" });
@@ -333,7 +362,11 @@ export function createHttpHandler(ctx) {
         let feeds = openFeeds.get(sn);
         if (!feeds) openFeeds.set(sn, (feeds = new Set()));
         // `peers` lets the idle sweep close every open request for this camera, not only this one.
-        const entry = { feed, startedAt: Date.now(), lease, peers: feeds };
+        // `battery` decides whether the idle sweep may auto-off this feed: a mains camera costs nothing to
+        // keep streaming, so a continuous consumer (an NVR, say) must not lose it. Unknown → battery.
+        const desc = dev.describe?.();
+        const battery = desc ? onBatteryPower(desc.model, desc.capabilities) : true;
+        const entry = { feed, startedAt: Date.now(), lease, peers: feeds, battery };
         feeds.add(entry);
         if (!streaming.has(sn)) ctx.broadcast({ event: "streamState", deviceSn: sn, active: true });
         streaming.add(sn);
@@ -381,7 +414,7 @@ export function createHttpHandler(ctx) {
         // Arm backoff so the next go2rtc retry doesn't wake the radio again — once per lease.
         if (!lease || !failedLeases.has(lease)) {
           if (lease) failedLeases.add(lease);
-          ctx.noteStreamFailure?.(sn);
+          ctx.noteStreamFailure?.(sn, String(e?.message ?? e));
         }
         // Never reuse a session that just failed (see dropStreamClient in streams.mjs) — but don't pull it
         // from under another request still streaming on it; drop it when that one ends.
